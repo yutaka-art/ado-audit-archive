@@ -1,0 +1,1259 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "US-SOX ITGC: Azure DevOps change-management evidence archive. Creates 4 custom tables in an existing Log Analytics workspace and one DCR (kind=Direct) for the Logs Ingestion API."
+  },
+  "parameters": {
+    "workspaceName": {
+      "type": "string",
+      "metadata": {
+        "description": "Existing Log Analytics workspace name. Must be in this resource group."
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Must match the Log Analytics workspace region."
+      }
+    },
+    "dcrName": {
+      "type": "string",
+      "defaultValue": "dcr-ado-audit",
+      "metadata": {
+        "description": "Name of the Data Collection Rule created for direct ingestion."
+      }
+    },
+    "interactiveRetentionInDays": {
+      "type": "int",
+      "defaultValue": 730,
+      "minValue": 30,
+      "maxValue": 730,
+      "metadata": {
+        "description": "Interactive (Analytics) retention. Azure hard limit is 730 days."
+      }
+    },
+    "totalRetentionInDays": {
+      "type": "int",
+      "defaultValue": 1095,
+      "minValue": 30,
+      "maxValue": 4383,
+      "metadata": {
+        "description": "Interactive + long-term retention. 1095 = 3 years (US-SOX requirement for this engagement)."
+      }
+    }
+  },
+  "variables": {
+    "tablePullRequest": "ADO_PullRequest_CL",
+    "tablePipelineRun": "ADO_PipelineRun_CL",
+    "tableApproval": "ADO_Approval_CL",
+    "tableExportAudit": "ADO_ExportAudit_CL",
+    "colsPullRequest": [
+      {
+        "name": "TimeGenerated",
+        "type": "dateTime",
+        "description": "PR closed date, or creation date when still active."
+      },
+      {
+        "name": "RecordId",
+        "type": "string",
+        "description": "Stable dedup key: PR-{org}-{projectId}-{repoId}-{pullRequestId}"
+      },
+      {
+        "name": "Organization",
+        "type": "string"
+      },
+      {
+        "name": "ProjectName",
+        "type": "string"
+      },
+      {
+        "name": "ProjectId",
+        "type": "string"
+      },
+      {
+        "name": "RepositoryName",
+        "type": "string"
+      },
+      {
+        "name": "RepositoryId",
+        "type": "string"
+      },
+      {
+        "name": "PullRequestId",
+        "type": "int"
+      },
+      {
+        "name": "Title",
+        "type": "string"
+      },
+      {
+        "name": "Status",
+        "type": "string",
+        "description": "active / completed / abandoned"
+      },
+      {
+        "name": "IsDraft",
+        "type": "boolean"
+      },
+      {
+        "name": "CreatedByDisplayName",
+        "type": "string"
+      },
+      {
+        "name": "CreatedByUpn",
+        "type": "string"
+      },
+      {
+        "name": "CreatedById",
+        "type": "string"
+      },
+      {
+        "name": "CreationDate",
+        "type": "dateTime"
+      },
+      {
+        "name": "ClosedDate",
+        "type": "dateTime"
+      },
+      {
+        "name": "ClosedByDisplayName",
+        "type": "string"
+      },
+      {
+        "name": "ClosedByUpn",
+        "type": "string"
+      },
+      {
+        "name": "SourceBranch",
+        "type": "string"
+      },
+      {
+        "name": "TargetBranch",
+        "type": "string"
+      },
+      {
+        "name": "MergeStatus",
+        "type": "string"
+      },
+      {
+        "name": "LastMergeCommitId",
+        "type": "string"
+      },
+      {
+        "name": "ReviewerCount",
+        "type": "int"
+      },
+      {
+        "name": "RequiredReviewerCount",
+        "type": "int"
+      },
+      {
+        "name": "ApprovedCount",
+        "type": "int",
+        "description": "Reviewers with vote 10 (approved) or 5 (approved with suggestions)."
+      },
+      {
+        "name": "RejectedCount",
+        "type": "int",
+        "description": "Reviewers with vote -10 (rejected) or -5 (waiting for author)."
+      },
+      {
+        "name": "IsSelfApproved",
+        "type": "boolean",
+        "description": "SOD evidence: true when the PR creator is also an approver."
+      },
+      {
+        "name": "ReviewersJson",
+        "type": "string",
+        "description": "JSON array: displayName / uniqueName / vote / isRequired / isContainer"
+      },
+      {
+        "name": "PolicyEvaluationsJson",
+        "type": "string",
+        "description": "JSON array of branch policy evaluations (build validation, minimum reviewers, ...)."
+      },
+      {
+        "name": "PolicyPassedCount",
+        "type": "int"
+      },
+      {
+        "name": "PolicyFailedCount",
+        "type": "int"
+      },
+      {
+        "name": "WorkItemRefsJson",
+        "type": "string"
+      },
+      {
+        "name": "JiraIssueKeys",
+        "type": "string",
+        "description": "ITGC traceability: Jira keys extracted from title / source branch (comma separated)."
+      },
+      {
+        "name": "WebUrl",
+        "type": "string"
+      },
+      {
+        "name": "ExportRunId",
+        "type": "string"
+      },
+      {
+        "name": "ExportedOn",
+        "type": "dateTime"
+      },
+      {
+        "name": "SchemaVersion",
+        "type": "string"
+      }
+    ],
+    "colsPipelineRun": [
+      {
+        "name": "TimeGenerated",
+        "type": "dateTime",
+        "description": "Build finish time, or queue time when still running."
+      },
+      {
+        "name": "RecordId",
+        "type": "string",
+        "description": "Stable dedup key: RUN-{org}-{projectId}-{buildId}"
+      },
+      {
+        "name": "Organization",
+        "type": "string"
+      },
+      {
+        "name": "ProjectName",
+        "type": "string"
+      },
+      {
+        "name": "ProjectId",
+        "type": "string"
+      },
+      {
+        "name": "BuildId",
+        "type": "int"
+      },
+      {
+        "name": "BuildNumber",
+        "type": "string"
+      },
+      {
+        "name": "DefinitionId",
+        "type": "int"
+      },
+      {
+        "name": "DefinitionName",
+        "type": "string"
+      },
+      {
+        "name": "DefinitionPath",
+        "type": "string"
+      },
+      {
+        "name": "DefinitionRevision",
+        "type": "int",
+        "description": "Change-control evidence: which revision of the pipeline definition ran."
+      },
+      {
+        "name": "Status",
+        "type": "string"
+      },
+      {
+        "name": "Result",
+        "type": "string"
+      },
+      {
+        "name": "Reason",
+        "type": "string",
+        "description": "manual / individualCI / pullRequest / schedule ..."
+      },
+      {
+        "name": "QueueTime",
+        "type": "dateTime"
+      },
+      {
+        "name": "StartTime",
+        "type": "dateTime"
+      },
+      {
+        "name": "FinishTime",
+        "type": "dateTime"
+      },
+      {
+        "name": "DurationSeconds",
+        "type": "real"
+      },
+      {
+        "name": "RequestedForDisplayName",
+        "type": "string"
+      },
+      {
+        "name": "RequestedForUpn",
+        "type": "string"
+      },
+      {
+        "name": "RequestedForId",
+        "type": "string"
+      },
+      {
+        "name": "RequestedByDisplayName",
+        "type": "string"
+      },
+      {
+        "name": "RequestedByUpn",
+        "type": "string"
+      },
+      {
+        "name": "RepositoryId",
+        "type": "string"
+      },
+      {
+        "name": "RepositoryName",
+        "type": "string"
+      },
+      {
+        "name": "RepositoryType",
+        "type": "string"
+      },
+      {
+        "name": "SourceBranch",
+        "type": "string"
+      },
+      {
+        "name": "SourceVersion",
+        "type": "string",
+        "description": "Commit SHA that was built."
+      },
+      {
+        "name": "SourceVersionMessage",
+        "type": "string"
+      },
+      {
+        "name": "TriggerPullRequestId",
+        "type": "int",
+        "description": "0 when the run was not triggered by a PR."
+      },
+      {
+        "name": "EnvironmentNames",
+        "type": "string",
+        "description": "Deployment environments touched by this run (comma separated)."
+      },
+      {
+        "name": "StagesJson",
+        "type": "string",
+        "description": "JSON array of stage name / result / start / finish, from the build timeline."
+      },
+      {
+        "name": "ApprovalCount",
+        "type": "int"
+      },
+      {
+        "name": "AgentPoolNames",
+        "type": "string"
+      },
+      {
+        "name": "JiraIssueKeys",
+        "type": "string"
+      },
+      {
+        "name": "WebUrl",
+        "type": "string"
+      },
+      {
+        "name": "ExportRunId",
+        "type": "string"
+      },
+      {
+        "name": "ExportedOn",
+        "type": "dateTime"
+      },
+      {
+        "name": "SchemaVersion",
+        "type": "string"
+      }
+    ],
+    "colsApproval": [
+      {
+        "name": "TimeGenerated",
+        "type": "dateTime",
+        "description": "Approval step last modified time (= the moment of approval/rejection)."
+      },
+      {
+        "name": "RecordId",
+        "type": "string",
+        "description": "Stable dedup key: APR-{org}-{projectId}-{approvalId}-{stepIndex}"
+      },
+      {
+        "name": "Organization",
+        "type": "string"
+      },
+      {
+        "name": "ProjectName",
+        "type": "string"
+      },
+      {
+        "name": "ProjectId",
+        "type": "string"
+      },
+      {
+        "name": "ApprovalId",
+        "type": "string"
+      },
+      {
+        "name": "ApprovalStatus",
+        "type": "string",
+        "description": "approved / rejected / pending / canceled / timedOut"
+      },
+      {
+        "name": "BuildId",
+        "type": "int"
+      },
+      {
+        "name": "BuildNumber",
+        "type": "string"
+      },
+      {
+        "name": "DefinitionName",
+        "type": "string"
+      },
+      {
+        "name": "StageName",
+        "type": "string"
+      },
+      {
+        "name": "EnvironmentName",
+        "type": "string"
+      },
+      {
+        "name": "MinRequiredApprovers",
+        "type": "int"
+      },
+      {
+        "name": "ExecutionOrder",
+        "type": "string"
+      },
+      {
+        "name": "Instructions",
+        "type": "string"
+      },
+      {
+        "name": "CreatedOn",
+        "type": "dateTime"
+      },
+      {
+        "name": "LastModifiedOn",
+        "type": "dateTime"
+      },
+      {
+        "name": "StepIndex",
+        "type": "int"
+      },
+      {
+        "name": "StepStatus",
+        "type": "string"
+      },
+      {
+        "name": "StepComment",
+        "type": "string",
+        "description": "Approver comment - primary ITGC approval evidence."
+      },
+      {
+        "name": "AssignedApproverDisplayName",
+        "type": "string"
+      },
+      {
+        "name": "AssignedApproverUpn",
+        "type": "string"
+      },
+      {
+        "name": "ActualApproverDisplayName",
+        "type": "string"
+      },
+      {
+        "name": "ActualApproverUpn",
+        "type": "string"
+      },
+      {
+        "name": "ActualApproverId",
+        "type": "string"
+      },
+      {
+        "name": "BuildRequestedByUpn",
+        "type": "string"
+      },
+      {
+        "name": "IsSelfApproval",
+        "type": "boolean",
+        "description": "SOD violation flag: approver == run requester."
+      },
+      {
+        "name": "WebUrl",
+        "type": "string"
+      },
+      {
+        "name": "ExportRunId",
+        "type": "string"
+      },
+      {
+        "name": "ExportedOn",
+        "type": "dateTime"
+      },
+      {
+        "name": "SchemaVersion",
+        "type": "string"
+      }
+    ],
+    "colsExportAudit": [
+      {
+        "name": "TimeGenerated",
+        "type": "dateTime"
+      },
+      {
+        "name": "ExportRunId",
+        "type": "string",
+        "description": "GUID shared by every record produced by one export execution."
+      },
+      {
+        "name": "Organization",
+        "type": "string"
+      },
+      {
+        "name": "RecordType",
+        "type": "string",
+        "description": "PullRequest / PipelineRun / Approval / Summary"
+      },
+      {
+        "name": "ProjectName",
+        "type": "string"
+      },
+      {
+        "name": "WindowStartUtc",
+        "type": "dateTime"
+      },
+      {
+        "name": "WindowEndUtc",
+        "type": "dateTime"
+      },
+      {
+        "name": "ExtractedCount",
+        "type": "int"
+      },
+      {
+        "name": "IngestedCount",
+        "type": "int"
+      },
+      {
+        "name": "FailedCount",
+        "type": "int"
+      },
+      {
+        "name": "DurationSeconds",
+        "type": "real"
+      },
+      {
+        "name": "Status",
+        "type": "string",
+        "description": "Succeeded / PartiallySucceeded / Failed"
+      },
+      {
+        "name": "ErrorMessage",
+        "type": "string"
+      },
+      {
+        "name": "PayloadSha256",
+        "type": "string",
+        "description": "Tamper-evidence hash of the raw JSON archived as a pipeline artifact."
+      },
+      {
+        "name": "ArchiveFileName",
+        "type": "string"
+      },
+      {
+        "name": "ExportPipelineBuildId",
+        "type": "int"
+      },
+      {
+        "name": "ExportPipelineWebUrl",
+        "type": "string"
+      },
+      {
+        "name": "AgentName",
+        "type": "string"
+      },
+      {
+        "name": "ScriptVersion",
+        "type": "string"
+      }
+    ],
+    "colsPullRequestStream": [
+      {
+        "name": "TimeGenerated",
+        "type": "datetime"
+      },
+      {
+        "name": "RecordId",
+        "type": "string"
+      },
+      {
+        "name": "Organization",
+        "type": "string"
+      },
+      {
+        "name": "ProjectName",
+        "type": "string"
+      },
+      {
+        "name": "ProjectId",
+        "type": "string"
+      },
+      {
+        "name": "RepositoryName",
+        "type": "string"
+      },
+      {
+        "name": "RepositoryId",
+        "type": "string"
+      },
+      {
+        "name": "PullRequestId",
+        "type": "int"
+      },
+      {
+        "name": "Title",
+        "type": "string"
+      },
+      {
+        "name": "Status",
+        "type": "string"
+      },
+      {
+        "name": "IsDraft",
+        "type": "boolean"
+      },
+      {
+        "name": "CreatedByDisplayName",
+        "type": "string"
+      },
+      {
+        "name": "CreatedByUpn",
+        "type": "string"
+      },
+      {
+        "name": "CreatedById",
+        "type": "string"
+      },
+      {
+        "name": "CreationDate",
+        "type": "datetime"
+      },
+      {
+        "name": "ClosedDate",
+        "type": "datetime"
+      },
+      {
+        "name": "ClosedByDisplayName",
+        "type": "string"
+      },
+      {
+        "name": "ClosedByUpn",
+        "type": "string"
+      },
+      {
+        "name": "SourceBranch",
+        "type": "string"
+      },
+      {
+        "name": "TargetBranch",
+        "type": "string"
+      },
+      {
+        "name": "MergeStatus",
+        "type": "string"
+      },
+      {
+        "name": "LastMergeCommitId",
+        "type": "string"
+      },
+      {
+        "name": "ReviewerCount",
+        "type": "int"
+      },
+      {
+        "name": "RequiredReviewerCount",
+        "type": "int"
+      },
+      {
+        "name": "ApprovedCount",
+        "type": "int"
+      },
+      {
+        "name": "RejectedCount",
+        "type": "int"
+      },
+      {
+        "name": "IsSelfApproved",
+        "type": "boolean"
+      },
+      {
+        "name": "ReviewersJson",
+        "type": "string"
+      },
+      {
+        "name": "PolicyEvaluationsJson",
+        "type": "string"
+      },
+      {
+        "name": "PolicyPassedCount",
+        "type": "int"
+      },
+      {
+        "name": "PolicyFailedCount",
+        "type": "int"
+      },
+      {
+        "name": "WorkItemRefsJson",
+        "type": "string"
+      },
+      {
+        "name": "JiraIssueKeys",
+        "type": "string"
+      },
+      {
+        "name": "WebUrl",
+        "type": "string"
+      },
+      {
+        "name": "ExportRunId",
+        "type": "string"
+      },
+      {
+        "name": "ExportedOn",
+        "type": "datetime"
+      },
+      {
+        "name": "SchemaVersion",
+        "type": "string"
+      }
+    ],
+    "colsPipelineRunStream": [
+      {
+        "name": "TimeGenerated",
+        "type": "datetime"
+      },
+      {
+        "name": "RecordId",
+        "type": "string"
+      },
+      {
+        "name": "Organization",
+        "type": "string"
+      },
+      {
+        "name": "ProjectName",
+        "type": "string"
+      },
+      {
+        "name": "ProjectId",
+        "type": "string"
+      },
+      {
+        "name": "BuildId",
+        "type": "int"
+      },
+      {
+        "name": "BuildNumber",
+        "type": "string"
+      },
+      {
+        "name": "DefinitionId",
+        "type": "int"
+      },
+      {
+        "name": "DefinitionName",
+        "type": "string"
+      },
+      {
+        "name": "DefinitionPath",
+        "type": "string"
+      },
+      {
+        "name": "DefinitionRevision",
+        "type": "int"
+      },
+      {
+        "name": "Status",
+        "type": "string"
+      },
+      {
+        "name": "Result",
+        "type": "string"
+      },
+      {
+        "name": "Reason",
+        "type": "string"
+      },
+      {
+        "name": "QueueTime",
+        "type": "datetime"
+      },
+      {
+        "name": "StartTime",
+        "type": "datetime"
+      },
+      {
+        "name": "FinishTime",
+        "type": "datetime"
+      },
+      {
+        "name": "DurationSeconds",
+        "type": "real"
+      },
+      {
+        "name": "RequestedForDisplayName",
+        "type": "string"
+      },
+      {
+        "name": "RequestedForUpn",
+        "type": "string"
+      },
+      {
+        "name": "RequestedForId",
+        "type": "string"
+      },
+      {
+        "name": "RequestedByDisplayName",
+        "type": "string"
+      },
+      {
+        "name": "RequestedByUpn",
+        "type": "string"
+      },
+      {
+        "name": "RepositoryId",
+        "type": "string"
+      },
+      {
+        "name": "RepositoryName",
+        "type": "string"
+      },
+      {
+        "name": "RepositoryType",
+        "type": "string"
+      },
+      {
+        "name": "SourceBranch",
+        "type": "string"
+      },
+      {
+        "name": "SourceVersion",
+        "type": "string"
+      },
+      {
+        "name": "SourceVersionMessage",
+        "type": "string"
+      },
+      {
+        "name": "TriggerPullRequestId",
+        "type": "int"
+      },
+      {
+        "name": "EnvironmentNames",
+        "type": "string"
+      },
+      {
+        "name": "StagesJson",
+        "type": "string"
+      },
+      {
+        "name": "ApprovalCount",
+        "type": "int"
+      },
+      {
+        "name": "AgentPoolNames",
+        "type": "string"
+      },
+      {
+        "name": "JiraIssueKeys",
+        "type": "string"
+      },
+      {
+        "name": "WebUrl",
+        "type": "string"
+      },
+      {
+        "name": "ExportRunId",
+        "type": "string"
+      },
+      {
+        "name": "ExportedOn",
+        "type": "datetime"
+      },
+      {
+        "name": "SchemaVersion",
+        "type": "string"
+      }
+    ],
+    "colsApprovalStream": [
+      {
+        "name": "TimeGenerated",
+        "type": "datetime"
+      },
+      {
+        "name": "RecordId",
+        "type": "string"
+      },
+      {
+        "name": "Organization",
+        "type": "string"
+      },
+      {
+        "name": "ProjectName",
+        "type": "string"
+      },
+      {
+        "name": "ProjectId",
+        "type": "string"
+      },
+      {
+        "name": "ApprovalId",
+        "type": "string"
+      },
+      {
+        "name": "ApprovalStatus",
+        "type": "string"
+      },
+      {
+        "name": "BuildId",
+        "type": "int"
+      },
+      {
+        "name": "BuildNumber",
+        "type": "string"
+      },
+      {
+        "name": "DefinitionName",
+        "type": "string"
+      },
+      {
+        "name": "StageName",
+        "type": "string"
+      },
+      {
+        "name": "EnvironmentName",
+        "type": "string"
+      },
+      {
+        "name": "MinRequiredApprovers",
+        "type": "int"
+      },
+      {
+        "name": "ExecutionOrder",
+        "type": "string"
+      },
+      {
+        "name": "Instructions",
+        "type": "string"
+      },
+      {
+        "name": "CreatedOn",
+        "type": "datetime"
+      },
+      {
+        "name": "LastModifiedOn",
+        "type": "datetime"
+      },
+      {
+        "name": "StepIndex",
+        "type": "int"
+      },
+      {
+        "name": "StepStatus",
+        "type": "string"
+      },
+      {
+        "name": "StepComment",
+        "type": "string"
+      },
+      {
+        "name": "AssignedApproverDisplayName",
+        "type": "string"
+      },
+      {
+        "name": "AssignedApproverUpn",
+        "type": "string"
+      },
+      {
+        "name": "ActualApproverDisplayName",
+        "type": "string"
+      },
+      {
+        "name": "ActualApproverUpn",
+        "type": "string"
+      },
+      {
+        "name": "ActualApproverId",
+        "type": "string"
+      },
+      {
+        "name": "BuildRequestedByUpn",
+        "type": "string"
+      },
+      {
+        "name": "IsSelfApproval",
+        "type": "boolean"
+      },
+      {
+        "name": "WebUrl",
+        "type": "string"
+      },
+      {
+        "name": "ExportRunId",
+        "type": "string"
+      },
+      {
+        "name": "ExportedOn",
+        "type": "datetime"
+      },
+      {
+        "name": "SchemaVersion",
+        "type": "string"
+      }
+    ],
+    "colsExportAuditStream": [
+      {
+        "name": "TimeGenerated",
+        "type": "datetime"
+      },
+      {
+        "name": "ExportRunId",
+        "type": "string"
+      },
+      {
+        "name": "Organization",
+        "type": "string"
+      },
+      {
+        "name": "RecordType",
+        "type": "string"
+      },
+      {
+        "name": "ProjectName",
+        "type": "string"
+      },
+      {
+        "name": "WindowStartUtc",
+        "type": "datetime"
+      },
+      {
+        "name": "WindowEndUtc",
+        "type": "datetime"
+      },
+      {
+        "name": "ExtractedCount",
+        "type": "int"
+      },
+      {
+        "name": "IngestedCount",
+        "type": "int"
+      },
+      {
+        "name": "FailedCount",
+        "type": "int"
+      },
+      {
+        "name": "DurationSeconds",
+        "type": "real"
+      },
+      {
+        "name": "Status",
+        "type": "string"
+      },
+      {
+        "name": "ErrorMessage",
+        "type": "string"
+      },
+      {
+        "name": "PayloadSha256",
+        "type": "string"
+      },
+      {
+        "name": "ArchiveFileName",
+        "type": "string"
+      },
+      {
+        "name": "ExportPipelineBuildId",
+        "type": "int"
+      },
+      {
+        "name": "ExportPipelineWebUrl",
+        "type": "string"
+      },
+      {
+        "name": "AgentName",
+        "type": "string"
+      },
+      {
+        "name": "ScriptVersion",
+        "type": "string"
+      }
+    ]
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/tables",
+      "apiVersion": "2022-10-01",
+      "name": "[concat(parameters('workspaceName'), '/', variables('tablePullRequest'))]",
+      "properties": {
+        "plan": "Analytics",
+        "retentionInDays": "[parameters('interactiveRetentionInDays')]",
+        "totalRetentionInDays": "[parameters('totalRetentionInDays')]",
+        "schema": {
+          "name": "[variables('tablePullRequest')]",
+          "description": "Azure DevOps pull request records exported for US-SOX ITGC change-management evidence.",
+          "columns": "[variables('colsPullRequest')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/tables",
+      "apiVersion": "2022-10-01",
+      "name": "[concat(parameters('workspaceName'), '/', variables('tablePipelineRun'))]",
+      "properties": {
+        "plan": "Analytics",
+        "retentionInDays": "[parameters('interactiveRetentionInDays')]",
+        "totalRetentionInDays": "[parameters('totalRetentionInDays')]",
+        "schema": {
+          "name": "[variables('tablePipelineRun')]",
+          "description": "Azure DevOps pipeline run records exported for US-SOX ITGC change-management evidence.",
+          "columns": "[variables('colsPipelineRun')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/tables",
+      "apiVersion": "2022-10-01",
+      "name": "[concat(parameters('workspaceName'), '/', variables('tableApproval'))]",
+      "properties": {
+        "plan": "Analytics",
+        "retentionInDays": "[parameters('interactiveRetentionInDays')]",
+        "totalRetentionInDays": "[parameters('totalRetentionInDays')]",
+        "schema": {
+          "name": "[variables('tableApproval')]",
+          "description": "Azure DevOps stage approval / check records exported for US-SOX ITGC approval evidence.",
+          "columns": "[variables('colsApproval')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/tables",
+      "apiVersion": "2022-10-01",
+      "name": "[concat(parameters('workspaceName'), '/', variables('tableExportAudit'))]",
+      "properties": {
+        "plan": "Analytics",
+        "retentionInDays": "[parameters('interactiveRetentionInDays')]",
+        "totalRetentionInDays": "[parameters('totalRetentionInDays')]",
+        "schema": {
+          "name": "[variables('tableExportAudit')]",
+          "description": "Self-audit trail of the export job itself - completeness evidence for the archive control.",
+          "columns": "[variables('colsExportAudit')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Insights/dataCollectionRules",
+      "apiVersion": "2023-03-11",
+      "name": "[parameters('dcrName')]",
+      "location": "[parameters('location')]",
+      "kind": "Direct",
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces/tables', parameters('workspaceName'), variables('tablePullRequest'))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces/tables', parameters('workspaceName'), variables('tablePipelineRun'))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces/tables', parameters('workspaceName'), variables('tableApproval'))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces/tables', parameters('workspaceName'), variables('tableExportAudit'))]"
+      ],
+      "properties": {
+        "description": "Direct ingestion rule for the Azure DevOps ITGC evidence archive.",
+        "streamDeclarations": {
+          "Custom-ADO_PullRequest_CL": {
+            "columns": "[variables('colsPullRequestStream')]"
+          },
+          "Custom-ADO_PipelineRun_CL": {
+            "columns": "[variables('colsPipelineRunStream')]"
+          },
+          "Custom-ADO_Approval_CL": {
+            "columns": "[variables('colsApprovalStream')]"
+          },
+          "Custom-ADO_ExportAudit_CL": {
+            "columns": "[variables('colsExportAuditStream')]"
+          }
+        },
+        "destinations": {
+          "logAnalytics": [
+            {
+              "workspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('workspaceName'))]",
+              "name": "logAnalyticsDestination"
+            }
+          ]
+        },
+        "dataFlows": [
+          {
+            "streams": [
+              "Custom-ADO_PullRequest_CL"
+            ],
+            "destinations": [
+              "logAnalyticsDestination"
+            ],
+            "transformKql": "source",
+            "outputStream": "Custom-ADO_PullRequest_CL"
+          },
+          {
+            "streams": [
+              "Custom-ADO_PipelineRun_CL"
+            ],
+            "destinations": [
+              "logAnalyticsDestination"
+            ],
+            "transformKql": "source",
+            "outputStream": "Custom-ADO_PipelineRun_CL"
+          },
+          {
+            "streams": [
+              "Custom-ADO_Approval_CL"
+            ],
+            "destinations": [
+              "logAnalyticsDestination"
+            ],
+            "transformKql": "source",
+            "outputStream": "Custom-ADO_Approval_CL"
+          },
+          {
+            "streams": [
+              "Custom-ADO_ExportAudit_CL"
+            ],
+            "destinations": [
+              "logAnalyticsDestination"
+            ],
+            "transformKql": "source",
+            "outputStream": "Custom-ADO_ExportAudit_CL"
+          }
+        ]
+      }
+    }
+  ],
+  "outputs": {
+    "dcrResourceId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Insights/dataCollectionRules', parameters('dcrName'))]"
+    },
+    "dcrImmutableId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Insights/dataCollectionRules', parameters('dcrName')), '2023-03-11').immutableId]"
+    },
+    "logsIngestionEndpoint": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Insights/dataCollectionRules', parameters('dcrName')), '2023-03-11').endpoints.logsIngestion]"
+    }
+  }
+}

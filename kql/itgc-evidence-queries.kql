@@ -1,0 +1,236 @@
+// ==================================================================
+// US-SOX ITGC - evidence queries
+//
+// All queries deduplicate with arg_max(ExportedOn, *) on RecordId,
+// because the export window overlaps on purpose and Log Analytics is
+// append-only. Always use these deduplicated forms for audit evidence.
+// ==================================================================
+
+
+// ------------------------------------------------------------------
+// [Q00] Deduplicated base views - copy these into saved functions
+// ------------------------------------------------------------------
+// Save as function: PullRequests_Latest
+ADO_PullRequest_CL
+| summarize arg_max(ExportedOn, *) by RecordId
+
+// Save as function: PipelineRuns_Latest
+ADO_PipelineRun_CL
+| summarize arg_max(ExportedOn, *) by RecordId
+
+// Save as function: Approvals_Latest
+ADO_Approval_CL
+| summarize arg_max(ExportedOn, *) by RecordId
+
+
+// ------------------------------------------------------------------
+// [Q01] Change list for a period - the primary audit sample population
+//       Control: every production change is traceable to an approved request.
+// ------------------------------------------------------------------
+let periodStart = datetime(2026-10-01);
+let periodEnd   = datetime(2026-11-01);
+ADO_PullRequest_CL
+| summarize arg_max(ExportedOn, *) by RecordId
+| where Status == 'completed' and ClosedDate between (periodStart .. periodEnd)
+| project ClosedDate, ProjectName, RepositoryName, PullRequestId, Title,
+          JiraIssueKeys, CreatedByUpn, ClosedByUpn, ApprovedCount,
+          RequiredReviewerCount, IsSelfApproved, TargetBranch,
+          LastMergeCommitId, WebUrl
+| order by ClosedDate asc
+
+
+// ------------------------------------------------------------------
+// [Q02] EXCEPTION: merged pull requests with no approval
+//       Control: changes require independent review before merge.
+//       Expected result: zero rows.
+// ------------------------------------------------------------------
+let periodStart = datetime(2026-10-01);
+let periodEnd   = datetime(2026-11-01);
+ADO_PullRequest_CL
+| summarize arg_max(ExportedOn, *) by RecordId
+| where Status == 'completed' and ClosedDate between (periodStart .. periodEnd)
+| where ApprovedCount == 0
+| project ClosedDate, ProjectName, RepositoryName, PullRequestId, Title,
+          CreatedByUpn, ClosedByUpn, ReviewersJson, WebUrl
+
+
+// ------------------------------------------------------------------
+// [Q03] EXCEPTION: self-approval (segregation of duties)
+//       Control: the requester of a change cannot approve it.
+//       Expected result: zero rows.
+// ------------------------------------------------------------------
+let periodStart = datetime(2026-10-01);
+let periodEnd   = datetime(2026-11-01);
+union
+  (ADO_PullRequest_CL
+   | summarize arg_max(ExportedOn, *) by RecordId
+   | where Status == 'completed' and ClosedDate between (periodStart .. periodEnd) and IsSelfApproved
+   | project Kind = 'PullRequest', EventTime = ClosedDate, ProjectName,
+             Reference = strcat('PR #', PullRequestId), Person = CreatedByUpn, WebUrl),
+  (ADO_Approval_CL
+   | summarize arg_max(ExportedOn, *) by RecordId
+   | where TimeGenerated between (periodStart .. periodEnd) and IsSelfApproval and StepStatus == 'approved'
+   | project Kind = 'StageApproval', EventTime = TimeGenerated, ProjectName,
+             Reference = strcat(DefinitionName, ' / ', StageName), Person = ActualApproverUpn, WebUrl)
+| order by EventTime asc
+
+
+// ------------------------------------------------------------------
+// [Q04] EXCEPTION: changes with no Jira issue key (traceability)
+//       Control: every change links to an approved change request in Jira.
+//       Expected result: zero rows.
+// ------------------------------------------------------------------
+let periodStart = datetime(2026-10-01);
+let periodEnd   = datetime(2026-11-01);
+ADO_PullRequest_CL
+| summarize arg_max(ExportedOn, *) by RecordId
+| where Status == 'completed' and ClosedDate between (periodStart .. periodEnd)
+| where isempty(JiraIssueKeys)
+| project ClosedDate, ProjectName, RepositoryName, PullRequestId, Title,
+          SourceBranch, CreatedByUpn, WebUrl
+
+
+// ------------------------------------------------------------------
+// [Q05] Production deployment approval evidence
+//       Control: production releases are approved by an authorized approver.
+// ------------------------------------------------------------------
+let periodStart = datetime(2026-10-01);
+let periodEnd   = datetime(2026-11-01);
+ADO_Approval_CL
+| summarize arg_max(ExportedOn, *) by RecordId
+| where TimeGenerated between (periodStart .. periodEnd)
+| where StageName has_any ('Prod', 'Production', 'Release') or EnvironmentName has_any ('prod', 'production')
+| project ApprovalTime = TimeGenerated, ProjectName, DefinitionName, StageName,
+          BuildNumber, ApprovalStatus, StepStatus,
+          AssignedApproverUpn, ActualApproverUpn, StepComment,
+          BuildRequestedByUpn, IsSelfApproval, WebUrl
+| order by ApprovalTime asc
+
+
+// ------------------------------------------------------------------
+// [Q06] End-to-end trace for one Jira issue
+//       Use when the auditor picks a sample and asks to walk it through.
+// ------------------------------------------------------------------
+let jiraKey = 'PROJ-123';
+union
+  (ADO_PullRequest_CL
+   | summarize arg_max(ExportedOn, *) by RecordId
+   | where JiraIssueKeys has jiraKey
+   | project EventTime = ClosedDate, Kind = 'PR merged', ProjectName,
+             Detail = strcat('PR #', PullRequestId, ' ', Title),
+             Actor = ClosedByUpn, Approvers = ReviewersJson, WebUrl),
+  (ADO_PipelineRun_CL
+   | summarize arg_max(ExportedOn, *) by RecordId
+   | where JiraIssueKeys has jiraKey
+   | project EventTime = FinishTime, Kind = strcat('Pipeline ', Result), ProjectName,
+             Detail = strcat(DefinitionName, ' ', BuildNumber),
+             Actor = RequestedForUpn, Approvers = StagesJson, WebUrl),
+  (ADO_Approval_CL
+   | summarize arg_max(ExportedOn, *) by RecordId
+   | join kind=inner (
+        ADO_PipelineRun_CL
+        | summarize arg_max(ExportedOn, *) by RecordId
+        | where JiraIssueKeys has jiraKey
+        | project BuildId
+     ) on BuildId
+   | project EventTime = TimeGenerated, Kind = strcat('Approval ', StepStatus), ProjectName,
+             Detail = strcat(DefinitionName, ' / ', StageName),
+             Actor = ActualApproverUpn, Approvers = StepComment, WebUrl)
+| order by EventTime asc
+
+
+// ------------------------------------------------------------------
+// [Q07] Completeness control: did the export run every day?
+//       Expected result: one Summary row per day, Status == 'Succeeded'.
+// ------------------------------------------------------------------
+let periodStart = datetime(2026-10-01);
+let periodEnd   = datetime(2026-11-01);
+ADO_ExportAudit_CL
+| where RecordType == 'Summary' and TimeGenerated between (periodStart .. periodEnd)
+| summarize arg_max(TimeGenerated, *) by ExportRunId
+| extend RunDateJst = format_datetime(datetime_utc_to_local(TimeGenerated, 'Asia/Tokyo'), 'yyyy-MM-dd')
+| summarize Runs = count(), Succeeded = countif(Status == 'Succeeded'),
+            Extracted = sum(ExtractedCount), Ingested = sum(IngestedCount)
+          by RunDateJst
+| order by RunDateJst asc
+
+
+// ------------------------------------------------------------------
+// [Q08] EXCEPTION: days with no successful export (gap detection)
+//       Expected result: zero rows.
+// ------------------------------------------------------------------
+let periodStart = startofday(datetime(2026-10-01));
+let periodEnd   = startofday(datetime(2026-11-01));
+let expectedDays = range d from periodStart to periodEnd - 1d step 1d
+    | project ExpectedDate = format_datetime(d, 'yyyy-MM-dd');
+let actualDays = ADO_ExportAudit_CL
+    | where RecordType == 'Summary' and Status == 'Succeeded'
+      and TimeGenerated between (periodStart .. periodEnd)
+    | extend RunDateJst = format_datetime(datetime_utc_to_local(TimeGenerated, 'Asia/Tokyo'), 'yyyy-MM-dd')
+    | distinct RunDateJst;
+expectedDays
+| join kind=leftanti actualDays on $left.ExpectedDate == $right.RunDateJst
+| project MissingExportDate = ExpectedDate
+| order by MissingExportDate asc
+
+
+// ------------------------------------------------------------------
+// [Q09] Archive integrity: hash of each period's raw payload
+//       Hand this to the auditor alongside the pipeline artifacts.
+// ------------------------------------------------------------------
+let periodStart = datetime(2026-10-01);
+let periodEnd   = datetime(2026-11-01);
+ADO_ExportAudit_CL
+| where RecordType == 'Summary' and TimeGenerated between (periodStart .. periodEnd)
+| summarize arg_max(TimeGenerated, *) by ExportRunId
+| project TimeGenerated, ExportRunId, ArchiveFileName, PayloadSha256,
+          ExtractedCount, IngestedCount, Status, ExportPipelineWebUrl
+| order by TimeGenerated asc
+
+
+// ------------------------------------------------------------------
+// [Q10] Pipeline definition changes vs runs
+//       Cross-check against AzureDevOpsAuditing, which does cover
+//       definition create / modify / delete events.
+// ------------------------------------------------------------------
+let periodStart = datetime(2026-10-01);
+let periodEnd   = datetime(2026-11-01);
+AzureDevOpsAuditing
+| where TimeGenerated between (periodStart .. periodEnd)
+| where ActionId startswith 'Pipelines.' or ActionId startswith 'Release.' or ActionId startswith 'Git.RefUpdatePolicy'
+| project TimeGenerated, ActionId, ActorUPN, ProjectName, Details, Data
+| order by TimeGenerated asc
+
+
+// ------------------------------------------------------------------
+// [Q11] Monthly control dashboard summary (one row per project)
+// ------------------------------------------------------------------
+let periodStart = datetime(2026-10-01);
+let periodEnd   = datetime(2026-11-01);
+let prs = ADO_PullRequest_CL
+    | summarize arg_max(ExportedOn, *) by RecordId
+    | where Status == 'completed' and ClosedDate between (periodStart .. periodEnd)
+    | summarize MergedPRs = count(),
+                NoApproval = countif(ApprovedCount == 0),
+                SelfApproved = countif(IsSelfApproved),
+                NoJiraKey = countif(isempty(JiraIssueKeys))
+              by ProjectName;
+let runs = ADO_PipelineRun_CL
+    | summarize arg_max(ExportedOn, *) by RecordId
+    | where FinishTime between (periodStart .. periodEnd)
+    | summarize PipelineRuns = count(),
+                FailedRuns = countif(Result == 'failed')
+              by ProjectName;
+let apprs = ADO_Approval_CL
+    | summarize arg_max(ExportedOn, *) by RecordId
+    | where TimeGenerated between (periodStart .. periodEnd)
+    | summarize Approvals = countif(StepStatus == 'approved'),
+                Rejections = countif(StepStatus == 'rejected'),
+                SodViolations = countif(IsSelfApproval and StepStatus == 'approved')
+              by ProjectName;
+prs
+| join kind=fullouter runs on ProjectName
+| join kind=fullouter apprs on ProjectName
+| project ProjectName, MergedPRs, NoApproval, SelfApproved, NoJiraKey,
+          PipelineRuns, FailedRuns, Approvals, Rejections, SodViolations
+| order by ProjectName asc

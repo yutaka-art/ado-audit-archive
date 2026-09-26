@@ -1,0 +1,75 @@
+{
+  "version": "1.2.0",
+  "files": {
+    ".gitignore": {
+      "sha256": "dcb5ba5843cc20e74a9b9f1220daee080768b19b5ce26b01800dea797b52f391",
+      "bytes": 6216,
+      "lines": 362
+    },
+    "docs/01_設計概要.md": {
+      "sha256": "17fcb3f1ac3861d9b35130ede6c5351cf5f52f1f6d6f679b23753a191d195ef3",
+      "bytes": 13326,
+      "lines": 268
+    },
+    "docs/02_導入手順書.md": {
+      "sha256": "8689550b76b2bd37fe8d33824b42fb9c2220d098d1aca6b8db49432bc8c69487",
+      "bytes": 15881,
+      "lines": 412
+    },
+    "docs/03_検証手順書.md": {
+      "sha256": "3871fc93c18523f51742879a02c9ce619108d6a728f1ba13a829e99498f75741",
+      "bytes": 15844,
+      "lines": 408
+    },
+    "docs/04_運用手順書.md": {
+      "sha256": "279666cd583beb34a5c70e61c94fb8696eea905ab5c87d1e701cffebef58ee63",
+      "bytes": 11390,
+      "lines": 256
+    },
+    "infra/deploy-ado-audit-archive.json": {
+      "sha256": "341f398e3a1fbb91ae2fe24ae34ce09ac160ecda0bf69a1bf3c8b49b6fe71d44",
+      "bytes": 29004,
+      "lines": 1259
+    },
+    "infra/Deploy-AuditArchive.ps1": {
+      "sha256": "86546af461662d700b7faf8d8655a339ea1d47f840a3f86d3bff45d85ca1367d",
+      "bytes": 4754,
+      "lines": 109
+    },
+    "kql/itgc-evidence-queries.kql": {
+      "sha256": "b09d21091b1f92754923512cadb73615c62c95f7a121a42e368e29331cc7b56e",
+      "bytes": 11208,
+      "lines": 236
+    },
+    "pipelines/azure-pipelines-ado-audit-export.yml": {
+      "sha256": "8e9a27891783bf38d6ac15ddff0321694222d1909689da37a39a77ac3f7aeb4b",
+      "bytes": 10063,
+      "lines": 278
+    },
+    "README.md": {
+      "sha256": "9bdf8b34e7f11ef0f39db2ebeb04e428db61b80fcb88bf9635bda6e2c66136c2",
+      "bytes": 5565,
+      "lines": 132
+    },
+    "scripts/AdoAuditExport.psm1": {
+      "sha256": "a475efe14747f9977385c37f43230e4f03104879539f1239a520ab4cd960d8f1",
+      "bytes": 42245,
+      "lines": 903
+    },
+    "scripts/Export-AdoAuditRecords.ps1": {
+      "sha256": "5a96753a2f21f26cb862614c9f526a4856e2d829f2a45af9f7a93c0427a560cb",
+      "bytes": 15210,
+      "lines": 351
+    },
+    "scripts/Invoke-OfflineSmokeTest.ps1": {
+      "sha256": "011a326d0910df7865da0615b2e7a05d2a9f4c4595311161d349fab3c6b2ee89",
+      "bytes": 12928,
+      "lines": 231
+    },
+    "scripts/Test-AdoAuditIngestion.ps1": {
+      "sha256": "0cb0e4d21cc0c72c2c6adc9fee91a5349289de2e66ef23ea7f3a1e7f308d1040",
+      "bytes": 15765,
+      "lines": 505
+    }
+  }
+}

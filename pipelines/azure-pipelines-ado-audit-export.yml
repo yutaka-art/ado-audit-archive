@@ -1,0 +1,278 @@
+# US-SOX ITGC - Azure DevOps change-management evidence export
+#
+# Schedule times are UTC:
+#   daily   17:00 UTC = 02:00 JST next day
+#   monthly 18:00 UTC on the 1st = 03:00 JST on the 2nd
+
+name: ADOAudit_$(Date:yyyyMMdd)$(Rev:.r)
+
+trigger: none
+pr: none
+
+schedules:
+  - cron: "0 17 * * *"
+    displayName: Daily incremental export (02:00 JST)
+    branches:
+      include:
+        - main
+    always: true
+
+  - cron: "0 18 1 * *"
+    displayName: Monthly full re-scan (03:00 JST on the 2nd)
+    branches:
+      include:
+        - main
+    always: true
+
+parameters:
+  - name: mode
+    displayName: Export mode
+    type: string
+    default: auto
+    values:
+      - auto
+      - lastMonth
+      - custom
+
+  - name: windowStartUtc
+    displayName: Window start (UTC, ISO 8601) - custom mode only
+    type: string
+    default: ' '
+
+  - name: windowEndUtc
+    displayName: Window end (UTC, ISO 8601) - custom mode only
+    type: string
+    default: ' '
+
+  - name: whatIfOnly
+    displayName: Dry run (extract/archive only)
+    type: boolean
+    default: false
+
+  - name: includePolicyEvaluations
+    displayName: Include PR branch policy evaluations
+    type: boolean
+    default: true
+
+variables:
+  - group: ado-audit-archive
+
+  - name: scriptDirectory
+    value: '$(Build.SourcesDirectory)/scripts'
+
+  - name: outputDirectory
+    value: '$(Build.ArtifactStagingDirectory)/evidence'
+
+pool:
+  vmImage: windows-latest
+
+stages:
+  - stage: Export
+    displayName: Extract and ingest evidence
+    jobs:
+      - job: ExportJob
+        displayName: Export Azure DevOps change-management records
+        timeoutInMinutes: 120
+
+        steps:
+          - checkout: self
+            fetchDepth: 1
+
+          - task: PowerShell@2
+            name: window
+            displayName: Resolve export window
+            inputs:
+              targetType: inline
+              pwsh: false
+              script: |
+                $ErrorActionPreference = 'Stop'
+
+                $mode = '${{ parameters.mode }}'
+                $startParam = '${{ parameters.windowStartUtc }}'.Trim()
+                $endParam = '${{ parameters.windowEndUtc }}'.Trim()
+                $nowUtc = (Get-Date).ToUniversalTime()
+
+                switch ($mode) {
+                    'custom' {
+                        if ([string]::IsNullOrWhiteSpace($startParam) -or
+                            [string]::IsNullOrWhiteSpace($endParam)) {
+                            throw 'custom mode requires windowStartUtc and windowEndUtc.'
+                        }
+
+                        $start = ([datetime]$startParam).ToUniversalTime()
+                        $end = ([datetime]$endParam).ToUniversalTime()
+                    }
+
+                    'lastMonth' {
+                        $firstOfThisMonth = [datetime]::SpecifyKind(
+                            (Get-Date -Year $nowUtc.Year -Month $nowUtc.Month -Day 1 -Hour 0 -Minute 0 -Second 0),
+                            [DateTimeKind]::Utc
+                        )
+                        $start = $firstOfThisMonth.AddMonths(-1)
+                        $end = $firstOfThisMonth
+                    }
+
+                    default {
+                        if ($mode -eq 'auto' -and $nowUtc.Day -eq 1) {
+                            $firstOfThisMonth = [datetime]::SpecifyKind(
+                                (Get-Date -Year $nowUtc.Year -Month $nowUtc.Month -Day 1 -Hour 0 -Minute 0 -Second 0),
+                                [DateTimeKind]::Utc
+                            )
+                            $start = $firstOfThisMonth.AddMonths(-1)
+                            $end = $firstOfThisMonth
+                        }
+                        else {
+                            $start = $nowUtc.AddHours(-24)
+                            $end = $nowUtc
+                        }
+                    }
+                }
+
+                if ($start -ge $end) {
+                    throw 'Resolved export window is invalid.'
+                }
+
+                $startIso = $start.ToString('yyyy-MM-ddTHH:mm:ssZ')
+                $endIso = $end.ToString('yyyy-MM-ddTHH:mm:ssZ')
+
+                Write-Host "Export window (UTC): $startIso .. $endIso"
+                Write-Host "##vso[task.setvariable variable=startUtc;isOutput=true]$startIso"
+                Write-Host "##vso[task.setvariable variable=endUtc;isOutput=true]$endIso"
+
+          - task: AzureCLI@2
+            displayName: Export and ingest records
+            inputs:
+              azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+              scriptType: ps
+              scriptLocation: inlineScript
+              addSpnToEnvironment: true
+              inlineScript: |
+                $ErrorActionPreference = 'Stop'
+
+                $projectFilter = @(
+                    '$(ADO_PROJECT_FILTER)'.Split(',') |
+                        ForEach-Object { $_.Trim() } |
+                        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+                )
+
+                $params = @{
+                    Organization          = '$(ADO_ORGANIZATION)'
+                    IngestionEndpoint     = '$(LAW_DCR_ENDPOINT)'
+                    DcrImmutableId        = '$(LAW_DCR_IMMUTABLE_ID)'
+                    WindowStartUtc        = '$(window.startUtc)'
+                    WindowEndUtc          = '$(window.endUtc)'
+                    OverlapHours          = 6
+                    AuthMode              = 'Entra'
+                    OutputDirectory       = '$(outputDirectory)'
+                    ExportPipelineBuildId = $(Build.BuildId)
+                    ExportPipelineWebUrl  = '$(System.CollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)'
+                    AgentName             = '$(Agent.Name)'
+                }
+
+                if ($projectFilter.Count -gt 0) {
+                    $params.ProjectFilter = $projectFilter
+                }
+
+                if ('${{ parameters.includePolicyEvaluations }}' -eq 'True') {
+                    $params.IncludePolicyEvaluations = $true
+                }
+
+                if ('${{ parameters.whatIfOnly }}' -eq 'True') {
+                    $params.WhatIfOnly = $true
+                }
+
+                & '$(scriptDirectory)/Export-AdoAuditRecords.ps1' @params
+
+          - task: PowerShell@2
+            name: summary
+            displayName: Publish run summary
+            condition: always()
+            inputs:
+              targetType: inline
+              pwsh: false
+              script: |
+                $resultPath = '$(outputDirectory)/export-result.json'
+
+                if (-not (Test-Path $resultPath)) {
+                    Write-Host 'No result file produced.'
+                    exit 0
+                }
+
+                $result = Get-Content -Path $resultPath -Raw | ConvertFrom-Json
+
+                $summary = @(
+                    '# Azure DevOps evidence export'
+                    ''
+                    '| Item | Value |'
+                    '|---|---|'
+                    "| ExportRunId | $($result.exportRunId) |"
+                    "| Status | $($result.status) |"
+                    "| Window (UTC) | $($result.windowStartUtc) .. $($result.windowEndUtc) |"
+                    "| Pull requests | $($result.pullRequests) |"
+                    "| Pipeline runs | $($result.pipelineRuns) |"
+                    "| Approvals | $($result.approvals) |"
+                    "| Ingested rows | $($result.ingestedTotal) |"
+                    "| Archive SHA256 | ``$($result.payloadSha256)`` |"
+                    "| Duration (s) | $($result.durationSeconds) |"
+                )
+
+                $summaryPath = '$(Build.ArtifactStagingDirectory)/summary.md'
+                $summary -join "`n" | Out-File -FilePath $summaryPath -Encoding utf8
+
+                Write-Host "##vso[task.uploadsummary]$summaryPath"
+                Write-Host "##vso[task.setvariable variable=exportRunId;isOutput=true]$($result.exportRunId)"
+
+          - task: PublishPipelineArtifact@1
+            displayName: Archive evidence payload
+            condition: always()
+            inputs:
+              targetPath: '$(outputDirectory)'
+              artifact: 'ado-audit-evidence-$(Build.BuildId)'
+              publishLocation: pipeline
+
+  - stage: Verify
+    displayName: Verify ingestion (completeness control)
+    dependsOn: Export
+    condition: and(eq(dependencies.Export.result, 'Succeeded'), ne('${{ parameters.whatIfOnly }}', 'True'))
+
+    jobs:
+      - job: VerifyJob
+        displayName: Reconcile ingested rows against the export job
+        timeoutInMinutes: 60
+
+        variables:
+          exportRunId: $[ stageDependencies.Export.ExportJob.outputs['summary.exportRunId'] ]
+
+        steps:
+          - checkout: self
+            fetchDepth: 1
+
+          - task: DownloadPipelineArtifact@2
+            displayName: Download evidence payload
+            inputs:
+              artifact: 'ado-audit-evidence-$(Build.BuildId)'
+              path: '$(Pipeline.Workspace)/evidence'
+
+          - task: AzureCLI@2
+            displayName: Run verification checks
+            inputs:
+              azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+              scriptType: ps
+              scriptLocation: inlineScript
+              inlineScript: |
+                $ErrorActionPreference = 'Stop'
+
+                & '$(scriptDirectory)/Test-AdoAuditIngestion.ps1' `
+                    -WorkspaceCustomerId '$(LAW_CUSTOMER_ID)' `
+                    -ExportRunId '$(exportRunId)' `
+                    -ResultFile '$(Pipeline.Workspace)/evidence/export-result.json' `
+                    -MaxWaitSeconds 900 `
+                    -PollIntervalSeconds 60
+
+                if ($LASTEXITCODE -eq 3) {
+                    Write-Host '##vso[task.logissue type=warning]Data is not queryable yet; rerun verification later.'
+                    Write-Host '##vso[task.complete result=SucceededWithIssues;]'
+                }
+                elseif ($LASTEXITCODE -ne 0) {
+                    throw 'Verification failed. Investigate before signing off this control period.'
+                }
