@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    US-SOX ITGC - exports Azure DevOps pull request, pipeline run and
+    Exports Azure DevOps pull request, pipeline run and
     approval records into Azure Monitor Logs custom tables.
 
 .DESCRIPTION

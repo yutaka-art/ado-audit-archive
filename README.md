@@ -27,7 +27,7 @@ REST API経由で抽出し、Log Analyticsへ3年間保管するための実装�
 
 | # | ファイル | 対象読者 | 内容 |
 |---|---|---|---|
-| 1 | `docs/01_設計概要.md` | 全員 | 背景・方式決定・アーキテクチャ・ITGC統制対応 |
+| 1 | `docs/01_設計概要.md` | 全員 | 背景・方式決定・アーキテクチャ・IT統制対応 |
 | 2 | `docs/02_導入手順書.md` | 構築担当 | STEP 1〜9の構築手順とチェックリスト |
 | 3 | `docs/03_検証手順書.md` | 統制責任者・構築担当 | 受入テスト12ケースと結果記録表 |
 | 4 | `docs/04_運用手順書.md` | 運用担当・統制責任者 | 月次運用・監査対応・障害対応 |
@@ -55,7 +55,7 @@ ado-audit-archive/
 │   ├── Test-AdoAuditIngestion.ps1         取込検証スクリプト
 │   └── Invoke-OfflineSmokeTest.ps1        オフライン自己テスト（36ケース）
 └── kql/
-    └── itgc-evidence-queries.kql          監査証跡クエリ集（Q01〜Q11）
+    └── audit-evidence-queries.kql          監査証跡クエリ集（Q01〜Q11）
 ```
 
 ---

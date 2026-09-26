@@ -1,5 +1,5 @@
 // ==================================================================
-// US-SOX ITGC - evidence queries
+// Change-management audit evidence queries
 //
 // All queries deduplicate with arg_max(ExportedOn, *) on RecordId,
 // because the export window overlaps on purpose and Log Analytics is

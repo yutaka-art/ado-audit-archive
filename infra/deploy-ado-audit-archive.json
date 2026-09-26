@@ -2,7 +2,7 @@
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
   "contentVersion": "1.0.0.0",
   "metadata": {
-    "description": "US-SOX ITGC: Azure DevOps change-management evidence archive. Creates 4 custom tables in an existing Log Analytics workspace and one DCR (kind=Direct) for the Logs Ingestion API."
+    "description": "Azure DevOps change-management audit evidence archive. Creates 4 custom tables in an existing Log Analytics workspace and one DCR (kind=Direct) for the Logs Ingestion API."
   },
   "parameters": {
     "workspaceName": {
@@ -40,7 +40,7 @@
       "minValue": 30,
       "maxValue": 4383,
       "metadata": {
-        "description": "Interactive + long-term retention. 1095 = 3 years (US-SOX requirement for this engagement)."
+        "description": "Interactive + long-term retention. 1095 = 3 years (long-term audit retention requirement)."
       }
     }
   },
@@ -189,7 +189,7 @@
       {
         "name": "JiraIssueKeys",
         "type": "string",
-        "description": "ITGC traceability: Jira keys extracted from title / source branch (comma separated)."
+        "description": "Audit traceability: Jira keys extracted from title / source branch (comma separated)."
       },
       {
         "name": "WebUrl",
@@ -457,7 +457,7 @@
       {
         "name": "StepComment",
         "type": "string",
-        "description": "Approver comment - primary ITGC approval evidence."
+        "description": "Approver comment - primary approval audit evidence."
       },
       {
         "name": "AssignedApproverDisplayName",
@@ -1111,7 +1111,7 @@
         "totalRetentionInDays": "[parameters('totalRetentionInDays')]",
         "schema": {
           "name": "[variables('tablePullRequest')]",
-          "description": "Azure DevOps pull request records exported for US-SOX ITGC change-management evidence.",
+          "description": "Azure DevOps pull request records exported for change-management audit evidence.",
           "columns": "[variables('colsPullRequest')]"
         }
       }
@@ -1126,7 +1126,7 @@
         "totalRetentionInDays": "[parameters('totalRetentionInDays')]",
         "schema": {
           "name": "[variables('tablePipelineRun')]",
-          "description": "Azure DevOps pipeline run records exported for US-SOX ITGC change-management evidence.",
+          "description": "Azure DevOps pipeline run records exported for change-management audit evidence.",
           "columns": "[variables('colsPipelineRun')]"
         }
       }
@@ -1141,7 +1141,7 @@
         "totalRetentionInDays": "[parameters('totalRetentionInDays')]",
         "schema": {
           "name": "[variables('tableApproval')]",
-          "description": "Azure DevOps stage approval / check records exported for US-SOX ITGC approval evidence.",
+          "description": "Azure DevOps stage approval / check records exported for approval audit evidence.",
           "columns": "[variables('colsApproval')]"
         }
       }
@@ -1174,7 +1174,7 @@
         "[resourceId('Microsoft.OperationalInsights/workspaces/tables', parameters('workspaceName'), variables('tableExportAudit'))]"
       ],
       "properties": {
-        "description": "Direct ingestion rule for the Azure DevOps ITGC evidence archive.",
+        "description": "Direct ingestion rule for the Azure DevOps audit evidence archive.",
         "streamDeclarations": {
           "Custom-ADO_PullRequest_CL": {
             "columns": "[variables('colsPullRequestStream')]"

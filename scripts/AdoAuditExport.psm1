@@ -1,7 +1,7 @@
 <#
     AdoAuditExport.psm1
     ------------------------------------------------------------------
-    US-SOX ITGC - Azure DevOps change-management evidence exporter.
+    Azure DevOps change-management audit evidence exporter.
 
     Extracts pull request, pipeline run and stage approval records from the
     Azure DevOps REST API and ingests them into Azure Monitor Logs custom

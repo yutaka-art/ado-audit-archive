@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Deploys the Azure DevOps ITGC evidence archive (custom tables + DCR) and
+    Deploys the Azure DevOps audit evidence archive (custom tables + DCR) and
     grants the ingestion identity the required role on the DCR.
 
 .DESCRIPTION
